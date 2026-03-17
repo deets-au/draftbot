@@ -16,6 +16,7 @@ def make_discord_emoji(name: str, emote_id: str) -> str:
     """Build a Discord custom emoji string from name + emote ID."""
     if not name or not emote_id:
         return ""
+
     safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
     return f"<:{safe}:{emote_id}>"
 
@@ -159,6 +160,7 @@ async def startdraft(ctx, event_id: str = None, *captain_names: str):
     draft = {
         "channel_id": ctx.channel.id,
         "event_id": event_id,
+        "event_data": data,
         "captains": captain_list,
         "pool": pool,
         "teams": {c: [{"name": c, "spec": "Captain", "role": "Leader", "class": "Captain"}] for c in captain_list},
