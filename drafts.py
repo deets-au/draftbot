@@ -8,8 +8,17 @@ DATA_FILE = "drafts.json"
 
 def load_drafts():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    return {}
+                return json.loads(content)
+        except (json.JSONDecodeError, OSError):
+            # If the file is empty/corrupt, reset it safely.
+            with open(DATA_FILE, "w", encoding="utf-8") as f:
+                f.write("{}")
+            return {}
     return {}
 
 
@@ -47,3 +56,11 @@ def get_signups_for_draft(draft):
 def get_classes_for_draft(draft):
     """Return the list of classes for a draft event."""
     return get_event_data_for_draft(draft).get("classes", []) if get_event_data_for_draft(draft) else []
+
+
+def clear_drafts():
+    """Clear all in-memory drafts and reset persistence file."""
+    global drafts
+    drafts = {}
+    save_drafts(drafts)
+    return drafts

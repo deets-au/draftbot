@@ -5,8 +5,8 @@ import random
 import discord
 from discord.ext import commands
 
-from drafts import drafts, save_drafts, get_draft_by_channel
-from api import fetch_event, make_discord_emoji
+from drafts import drafts, save_drafts, get_draft_by_channel, clear_drafts
+from api import fetch_event, make_discord_emoji, SPEC_TO_ID
 
 
 def player_str(p):
@@ -54,7 +54,15 @@ async def startdraft(ctx, event_id: str = None, *captain_names: str):
         if s.get("status") == "primary":
             class_emoji = s.get("classEmoteId")
             class_name = class_lookup.get(class_emoji, "Unknown")
-            spec_emoji = make_discord_emoji(s.get("specName", ""), s.get("specEmoteId", ""))
+            spec_name = s.get("specName", "").replace(" ", "")
+            class_emote_id = s.get("classEmoteId", "")
+
+            # Use classEmoteId for the specialization emoji display (raw ID style)
+            if class_emote_id:
+                spec_emoji = f":{class_emote_id}:"
+            else:
+                # fallback to existing custom emoji format
+                spec_emoji = make_discord_emoji(spec_name, s.get("specEmoteId", ""))
 
             players.append({
                 "name": s["name"],
@@ -108,11 +116,18 @@ async def startdraft(ctx, event_id: str = None, *captain_names: str):
         inline=False
     )
     embed.add_field(name="Remaining Players", value=len(pool), inline=True)
+    first_cap = captain_list[0]
+    embed.add_field(name="Next Turn", value=f"**Round 1 – {first_cap}** your turn! (Your team already has you as captain)", inline=False)
     embed.set_footer(text="Use !remaining • !pick <name> on your turn")
     await ctx.send(embed=embed)
 
-    first_cap = captain_list[0]
-    await ctx.send(f"**Round 1 – {first_cap}** your turn! (Your team already has you as captain)")
+
+@commands.command(name="cleardrafts")
+@commands.has_permissions(administrator=True)
+async def cleardrafts(ctx):
+    """Administrator-only: clear all active draft state and reset drafts.json."""
+    clear_drafts()
+    await ctx.send("✅ All drafts cleared and drafts.json reset.")
 
 
 @commands.command(name="pick")
@@ -260,5 +275,6 @@ def setup(bot):
     bot.add_command(startdraft)
     bot.add_command(pick)
     bot.add_command(remaining)
+    bot.add_command(cleardrafts)
     bot.add_command(teams)
     bot.add_command(status)

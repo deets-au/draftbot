@@ -2,6 +2,16 @@
 
 import re
 import aiohttp
+import json
+import os
+
+# Load WoW spec mapping
+MAPPING_FILE = os.path.join(os.path.dirname(__file__), "wow_spec_mapping.json")
+with open(MAPPING_FILE, "r") as f:
+    SPEC_MAPPING = json.load(f)
+
+# Reverse mapping: spec name -> emote ID, normalized (remove spaces)
+SPEC_TO_ID = {v.replace(" ", ""): k for k, v in SPEC_MAPPING.items()}
 
 
 def make_discord_emoji(name: str, emote_id: str) -> str:
@@ -10,7 +20,7 @@ def make_discord_emoji(name: str, emote_id: str) -> str:
         return ""
 
     safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
-    return f"<:{safe}:{emote_id}>"
+    return f"<a:{safe}:{emote_id}>"
 
 
 async def fetch_event(event_id: str):
