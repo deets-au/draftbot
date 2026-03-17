@@ -73,6 +73,27 @@ def player_str(p):
     cls = p.get("class", "Unknown")
     return f"{p['name']} ({p['spec']} - {p['role']} - {cls})"
 
+
+def get_draft_by_channel(channel_id):
+    """Return the draft stored for a given channel, or None."""
+    return next((d for d in drafts.values() if d.get("channel_id") == channel_id), None)
+
+
+def get_event_data_for_draft(draft):
+    """Return the raw event payload stored in a draft."""
+    return (draft or {}).get("event_data")
+
+
+def get_signups_for_draft(draft):
+    """Return the list of signups for a draft event."""
+    return get_event_data_for_draft(draft).get("signUps", []) if get_event_data_for_draft(draft) else []
+
+
+def get_classes_for_draft(draft):
+    """Return the list of classes for a draft event."""
+    return get_event_data_for_draft(draft).get("classes", []) if get_event_data_for_draft(draft) else []
+
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -190,12 +211,12 @@ async def pick(ctx, *, query: str = None):
         await ctx.send("Usage: `!pick <part of player name>`")
         return
 
-    event_id = next((eid for eid, d in drafts.items() if d["channel_id"] == ctx.channel.id), None)
-    if not event_id:
+    draft = get_draft_by_channel(ctx.channel.id)
+    if not draft:
         await ctx.send("No active draft in this channel.")
         return
 
-    draft = drafts[event_id]
+    event_id = draft["event_id"]
     current_cap = draft["captains"][draft["turn"]]
 
     if ctx.author.display_name != current_cap and ctx.author.name != current_cap:
@@ -242,12 +263,11 @@ async def pick(ctx, *, query: str = None):
 
 @bot.command(name="remaining")
 async def remaining(ctx):
-    event_id = next((eid for eid, d in drafts.items() if d["channel_id"] == ctx.channel.id), None)
-    if not event_id:
+    draft = get_draft_by_channel(ctx.channel.id)
+    if not draft:
         await ctx.send("No active draft here.")
         return
 
-    draft = drafts[event_id]
     if not draft["pool"]:
         await ctx.send("Pool is empty!")
         return
@@ -297,12 +317,11 @@ async def remaining(ctx):
 
 @bot.command(name="teams")
 async def teams(ctx):
-    event_id = next((eid for eid, d in drafts.items() if d["channel_id"] == ctx.channel.id), None)
-    if not event_id:
+    draft = get_draft_by_channel(ctx.channel.id)
+    if not draft:
         await ctx.send("No active draft here.")
         return
 
-    draft = drafts[event_id]
     embed = discord.Embed(title="Current Teams")
     for cap, team in draft["teams"].items():
         embed.add_field(name=cap, value="\n".join(player_str(p) for p in team), inline=False)
@@ -310,12 +329,11 @@ async def teams(ctx):
 
 @bot.command(name="status")
 async def status(ctx):
-    event_id = next((eid for eid, d in drafts.items() if d["channel_id"] == ctx.channel.id), None)
-    if not event_id:
+    draft = get_draft_by_channel(ctx.channel.id)
+    if not draft:
         await ctx.send("No active draft here.")
         return
 
-    draft = drafts[event_id]
     current = draft["captains"][draft["turn"]]
     embed = discord.Embed(title="Draft Status")
     embed.add_field(name="Current Turn", value=current, inline=False)
