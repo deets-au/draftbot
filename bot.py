@@ -1,4 +1,5 @@
 import atexit
+import re
 import discord
 from discord.ext import commands
 import aiohttp
@@ -9,6 +10,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
+
+
+def make_discord_emoji(name: str, emote_id: str) -> str:
+    """Build a Discord custom emoji string from name + emote ID."""
+    if not name or not emote_id:
+        return ""
+    safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
+    return f"<:{safe}:{emote_id}>"
 
 
 def _save_drafts_on_exit() -> None:
@@ -114,10 +123,12 @@ async def startdraft(ctx, event_id: str = None, *captain_names: str):
         if s.get("status") == "primary":
             class_emoji = s.get("classEmoteId")
             class_name = class_lookup.get(class_emoji, "Unknown")
+            spec_emoji = make_discord_emoji(s.get("specName", ""), s.get("specEmoteId", ""))
 
             players.append({
                 "name": s["name"],
                 "spec": s.get("specName", "Unknown"),
+                "specEmoji": spec_emoji,
                 "role": s.get("roleName", "Unknown"),
                 "class": class_name,
                 "userId": s.get("userId")
@@ -271,7 +282,7 @@ async def remaining(ctx):
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{p['name']} ({p['spec']})"
+            f"{p['name']} {p.get('specEmoji','')} ({p['spec']})"
             for p in sorted_players
         ) or "—"
 
@@ -289,7 +300,7 @@ async def remaining(ctx):
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{p['name']} ({p['spec']})"
+            f"{p['name']} {p.get('specEmoji','')} ({p['spec']})"
             for p in sorted_players
         ) or "—"
 
