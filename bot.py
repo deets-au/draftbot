@@ -250,20 +250,6 @@ async def remaining(ctx):
         await ctx.send("Pool is empty!")
         return
 
-    # Coloured emoji squares for class headings
-    class_dots = {
-        "Priest": "⬜",
-        "Shaman": "🟦",
-        "Warrior": "🟫",
-        "Druid": "🟧",
-        "Mage": "🟦",
-        "Paladin": "🩷",      # ← Lighter pink!
-        "Warlock": "🟪",
-        "Hunter": "🟩",
-        "Rogue": "🟨",
-        "Unknown": "⬛"
-    }
-
     embed = discord.Embed(
         title="Remaining Players",
         color=0x2f3136  # dark grey background
@@ -273,22 +259,20 @@ async def remaining(ctx):
     by_class = {}
     for p in draft["pool"]:
         cls = p.get("class", "Unknown")
-        if cls in class_dots:
-            by_class.setdefault(cls, []).append(p)
+        by_class.setdefault(cls, []).append(p)
 
     for cls, players in sorted(by_class.items()):
-        dot = class_dots[cls]
-        field_name = f"{dot} **{cls} ({len(players)})**"
+        field_name = f"**{cls} ({len(players)})**"
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{dot} {p['name']}"
+            f"{p.get('specEmoji','')} {p['name']}"
             for p in sorted_players
         ) or "—"
 
         embed.add_field(name=field_name, value=field_value, inline=True)
 
-    # ── Tanks and Healers (inline, no colour/dot) ─────────────────────────────
+    # ── Tanks and Healers (inline) ─────────────────────────────────────────────
     by_role = {}
     for p in draft["pool"]:
         role = p.get("role", "Unknown")
@@ -300,7 +284,7 @@ async def remaining(ctx):
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{class_dots.get(p.get('class','Unknown'),'⬛')} {p['name']}"
+            f"{p.get('specEmoji','')} {p['name']}"
             for p in sorted_players
         ) or "—"
 
