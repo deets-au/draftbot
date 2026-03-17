@@ -1,280 +1,401 @@
-"""Command implementations for the DraftBot."""
-
-import random
-
-import discord
 from discord.ext import commands
+import discord
+import aiohttp
+import random
+from api import fetch_event
+from drafts import save_drafts
 
-from drafts import drafts, save_drafts, get_draft_by_channel, clear_drafts
-from api import fetch_event, make_discord_emoji, SPEC_TO_ID
-
+def get_emote_url(emote_id):
+    if emote_id:
+        return f"https://raw.githubusercontent.com/deets-au/draftbot/main/wow_emotes/{emote_id}.png"
+    return None
 
 def player_str(p):
     if p.get("spec") == "Captain":
         return f"{p['name']} (Captain / Leader)"
-    cls = p.get("class", "Unknown")
-    return f"{p['name']} ({p['spec']} - {p['role']} - {cls})"
+    
+    parts = [p['name'], f"({p['spec']})"]
+    
+    spec_url = get_emote_url(p.get("specEmoteId"))
+    if spec_url:
+        parts.append(f"[spec]({spec_url})")
+    
+    role_url = get_emote_url(p.get("roleEmoteId"))
+    if role_url:
+        parts.append(f"[role]({role_url})")
+    
+    class_url = get_emote_url(p.get("classEmoteId"))
+    if class_url:
+        parts.append(f"[class]({class_url})")
+    
+    return " ".join(parts)
 
+def setup_commands(bot):
+    async def notify_turn(ctx, draft, turn_index):
+        cap_dict = draft["captains"][turn_index]
+        cap_name = cap_dict["name"]
+        user_id = cap_dict.get("userId")
+        
+        mention = f"@{cap_name}"
+        if user_id:
+            try:
+                user = await bot.fetch_user(int(user_id))
+                mention = user.mention
+            except:
+                pass  # fallback
 
-@commands.command(name="hello")
-async def hello(ctx):
-    await ctx.send("Hello! Bot is alive.")
+        await ctx.send(f"{mention} **your turn!** Pick a player with `!pick <name>`.\nRemaining: {len(draft['pool'])}")
 
+    @bot.command(name="hello")
+    async def hello(ctx):
+        await ctx.send("Hello! Bot is alive.")
 
-@commands.command(name="startdraft")
-async def startdraft(ctx, event_id: str = None, *captain_names: str):
-    if not event_id:
-        await ctx.send("Usage: `!startdraft <eventid> Captain1 Captain2 ...`")
-        return
+    @bot.command(name="startdraft")
+    async def startdraft(ctx, event_id: str = None, *captain_names: str):
+        if not event_id:
+            await ctx.send("Usage: `!startdraft <eventid> Captain1 Captain2 ...`")
+            return
 
-    if len(captain_names) < 2:
-        await ctx.send("You need at least 2 captains.")
-        return
+        if len(captain_names) < 2:
+            await ctx.send("You need at least 2 captains.")
+            return
 
-    data, err = await fetch_event(event_id)
-    if err:
-        await ctx.send(f"Failed to fetch event: {err}")
-        return
+        data, err = await fetch_event(event_id)
+        if err:
+            await ctx.send(f"Failed to fetch event: {err}")
+            return
 
-    signups = data.get("signUps", [])
-    if not signups:
-        await ctx.send("No sign-ups found in this event.")
-        return
+        signups = data.get("signUps", [])
+        if not signups:
+            await ctx.send("No sign-ups found in this event.")
+            return
 
-    # Build class lookup: emoteId → class name
-    class_lookup = {}
-    for cls in data.get("classes", []):
-        emote = cls.get("emoteId")
-        if emote:
-            class_lookup[emote] = cls.get("name", "Unknown")
+        players = []
+        for s in signups:
+            if s.get("status") == "primary":
+                players.append({
+                    "name": s["name"],
+                    "spec": s.get("specName", "Unknown"),
+                    "role": s.get("roleName", "Unknown"),
+                    "class": s.get("className", "Unknown"),
+                    "userId": s.get("userId")
+                })
 
-    # Build players with correct class name
-    players = []
-    for s in signups:
-        if s.get("status") == "primary":
-            class_emoji = s.get("classEmoteId")
-            class_name = class_lookup.get(class_emoji, "Unknown")
-            spec_name = s.get("specName", "").replace(" ", "")
-            class_emote_id = s.get("classEmoteId", "")
+        if len(players) < len(captain_names) + 5:
+            await ctx.send(f"Not enough players ({len(players)}) for {len(captain_names)} teams.")
+            return
 
-            # Use classEmoteId for the specialization emoji display (raw ID style)
-            if class_emote_id:
-                spec_emoji = f":{class_emote_id}:"
-            else:
-                # fallback to existing custom emoji format
-                spec_emoji = make_discord_emoji(spec_name, s.get("specEmoteId", ""))
-
-            players.append({
-                "name": s["name"],
-                "spec": s.get("specName", "Unknown"),
-                "specEmoji": spec_emoji,
-                "role": s.get("roleName", "Unknown"),
-                "class": class_name,
-                "userId": s.get("userId")
+        captain_list = []
+        for cap in captain_names:
+            cap_lower = cap.lower()
+            matches = [p for p in players if cap_lower in p["name"].lower()]
+            if not matches:
+                await ctx.send(f"Captain '{cap}' not found in sign-ups.")
+                return
+            if len(matches) > 1:
+                names = ", ".join(m["name"] for m in matches[:3])
+                await ctx.send(f"Multiple matches for '{cap}': {names}\nBe more specific.")
+                return
+            match = matches[0]
+            captain_list.append({
+                "name": match["name"],
+                "userId": match["userId"]
             })
 
-    print(f"[DEBUG] Loaded {len(players)} players with classes: {set(p['class'] for p in players)}")
+        pool = [p for p in players if p["name"] not in [c["name"] for c in captain_list]]
+        random.shuffle(pool)
 
-    if len(players) < len(captain_names) + 5:
-        await ctx.send(f"Not enough players ({len(players)}) for {len(captain_names)} teams.")
-        return
+        draft = {
+            "channel_id": ctx.channel.id,
+            "event_id": event_id,
+            "captains": captain_list,
+            "pool": pool,
+            "teams": {c["name"]: [{"name": c["name"], "spec": "Captain", "role": "Leader", "class": "Captain"}] for c in captain_list},
+            "turn": 0,
+            "direction": 1
+        }
 
-    captain_list = []
-    for cap in captain_names:
-        cap_lower = cap.lower()
-        matches = [p for p in players if cap_lower in p["name"].lower()]
-        if not matches:
-            await ctx.send(f"Captain '{cap}' not found in sign-ups.")
-            return
-        if len(matches) > 1:
-            names = ", ".join(m["name"] for m in matches[:3])
-            await ctx.send(f"Multiple matches for '{cap}': {names}\nBe more specific.")
-            return
-        captain_list.append(matches[0]["name"])
+        bot.drafts[event_id] = draft
+        save_drafts(bot.drafts)
 
-    pool = [p for p in players if p["name"] not in captain_list]
-    random.shuffle(pool)
-
-    draft = {
-        "channel_id": ctx.channel.id,
-        "event_id": event_id,
-        "event_data": data,
-        "captains": captain_list,
-        "pool": pool,
-        "teams": {c: [{"name": c, "spec": "Captain", "role": "Leader", "class": "Captain"}] for c in captain_list},
-        "turn": 0,
-        "direction": 1
-    }
-
-    drafts[event_id] = draft
-    save_drafts(drafts)
-
-    embed = discord.Embed(title=f"Draft Started – Event {event_id}", color=0x00aa88)
-    embed.add_field(
-        name="Captains & Starting Teams",
-        value="\n".join(f"• **{c}** (Team {c} starts with captain themselves)" for c in captain_list),
-        inline=False
-    )
-    embed.add_field(name="Remaining Players", value=len(pool), inline=True)
-    first_cap = captain_list[0]
-    embed.add_field(name="Next Turn", value=f"**Round 1 – {first_cap}** your turn! (Your team already has you as captain)", inline=False)
-    embed.set_footer(text="Use !remaining • !pick <name> on your turn")
-    await ctx.send(embed=embed)
-
-
-@commands.command(name="cleardrafts")
-@commands.has_permissions(administrator=True)
-async def cleardrafts(ctx):
-    """Administrator-only: clear all active draft state and reset drafts.json."""
-    clear_drafts()
-    await ctx.send("✅ All drafts cleared and drafts.json reset.")
-
-
-@commands.command(name="pick")
-async def pick(ctx, *, query: str = None):
-    if not query:
-        await ctx.send("Usage: `!pick <part of player name>`")
-        return
-
-    draft = get_draft_by_channel(ctx.channel.id)
-    if not draft:
-        await ctx.send("No active draft in this channel.")
-        return
-
-    current_cap = draft["captains"][draft["turn"]]
-
-    if ctx.author.display_name != current_cap and ctx.author.name != current_cap:
-        await ctx.send(f"It's **{current_cap}**'s turn — you can't pick right now.")
-        return
-
-    q = query.lower().strip()
-    matches = [p for p in draft["pool"] if q in p["name"].lower()]
-
-    if not matches:
-        await ctx.send(f"No player found matching '{query}'.\nTry `!remaining`.")
-        return
-
-    if len(matches) > 1:
-        names = "\n".join(f"- {player_str(m)}" for m in matches[:6])
-        await ctx.send(f"Multiple matches:\n{names}\nBe more specific.")
-        return
-
-    picked = matches[0]
-    draft["pool"].remove(picked)
-    draft["teams"][current_cap].append(picked)
-
-    await ctx.send(f"**{current_cap}** picked **{player_str(picked)}**!")
-
-    if not draft["pool"]:
-        embed = discord.Embed(title="Draft Complete!", color=0xff8800)
-        for cap, team in draft["teams"].items():
-            team_str = "\n".join(player_str(p) for p in team)
-            embed.add_field(name=cap, value=team_str or "—", inline=False)
+        embed = discord.Embed(title=f"Draft Started – Event {event_id}", color=0x00aa88)
+        embed.add_field(
+            name="Captains & Starting Teams",
+            value="\n".join(f"• **{c['name']}** (Team {c['name']} starts with captain themselves)" for c in captain_list),
+            inline=False
+        )
+        embed.add_field(name="Remaining Players", value=len(pool), inline=True)
+        embed.set_footer(text="Use !remaining • !pick <name> on your turn")
         await ctx.send(embed=embed)
-        del drafts[draft["event_id"]]
-        save_drafts(drafts)
-        return
 
-    draft["turn"] += draft["direction"]
-    if draft["turn"] >= len(draft["captains"]) or draft["turn"] < 0:
-        draft["direction"] *= -1
+        await notify_turn(ctx, draft, 0)
+
+    @bot.command(name="pick")
+    async def pick(ctx, *, query: str = None):
+        if not query:
+            await ctx.send("Usage: `!pick <part of player name>`")
+            return
+
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft in this channel.")
+            return
+
+        draft = bot.drafts[event_id]
+        current_cap_dict = draft["captains"][draft["turn"]]
+        current_cap = current_cap_dict["name"]
+
+        if ctx.author.display_name != current_cap and ctx.author.name != current_cap:
+            await ctx.send(f"It's **{current_cap}**'s turn — you can't pick right now.")
+            return
+
+        q = query.lower().strip()
+        matches = [p for p in draft["pool"] if q in p["name"].lower()]
+
+        if not matches:
+            await ctx.send(f"No player found matching '{query}'.\nTry `!remaining`.")
+            return
+
+        if len(matches) > 1:
+            names = "\n".join(f"- {player_str(m)}" for m in matches[:6])
+            await ctx.send(f"Multiple matches:\n{names}\nBe more specific.")
+            return
+
+        picked = matches[0]
+        draft["pool"].remove(picked)
+        draft["teams"][current_cap].append(picked)
+
+        await ctx.send(f"**{current_cap}** picked **{player_str(picked)}**!")
+
+        if not draft["pool"]:
+            embed = discord.Embed(title="Draft Complete!", color=0xff8800)
+            for cap_dict, team in draft["teams"].items():
+                cap = cap_dict["name"]
+                team_str = "\n".join(player_str(p) for p in team)
+                embed.add_field(name=cap, value=team_str or "—", inline=False)
+            await ctx.send(embed=embed)
+            del bot.drafts[event_id]
+            save_drafts(bot.drafts)
+            return
+
         draft["turn"] += draft["direction"]
+        if draft["turn"] >= len(draft["captains"]) or draft["turn"] < 0:
+            draft["direction"] *= -1
+            draft["turn"] += draft["direction"]
 
-    save_drafts(drafts)
+        save_drafts(bot.drafts)
 
-    next_cap = draft["captains"][draft["turn"]]
-    await ctx.send(f"Next turn: **{next_cap}**")
+        await notify_turn(ctx, draft, draft["turn"])
 
+    @bot.command(name="adminpick")
+    @commands.has_permissions(administrator=True)
+    async def adminpick(ctx, *, query: str = None):
+        if not query:
+            await ctx.send("Usage: `!adminpick <part of player name>` (admin override)")
+            return
 
-@commands.command(name="remaining")
-async def remaining(ctx):
-    draft = get_draft_by_channel(ctx.channel.id)
-    if not draft:
-        await ctx.send("No active draft here.")
-        return
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft in this channel.")
+            return
 
-    if not draft["pool"]:
-        await ctx.send("Pool is empty!")
-        return
+        draft = bot.drafts[event_id]
 
-    embed = discord.Embed(
-        title="Remaining Players",
-        color=0x2f3136  # dark grey background
-    )
+        if not draft["pool"]:
+            await ctx.send("No players left to pick.")
+            return
 
-    # ── Class groups (inline) ─────────────────────────────────────────────────
-    by_class = {}
-    for p in draft["pool"]:
-        cls = p.get("class", "Unknown")
-        by_class.setdefault(cls, []).append(p)
+        q = query.lower().strip()
+        matches = [p for p in draft["pool"] if q in p["name"].lower()]
 
-    for cls, players in sorted(by_class.items()):
-        field_name = f"**{cls} ({len(players)})**"
+        if not matches:
+            await ctx.send(f"No player found matching '{query}'.\nTry `!remaining`.")
+            return
 
-        sorted_players = sorted(players, key=lambda x: x["name"])
-        field_value = "\n".join(
-            f"{p.get('specEmoji','')} {p['name']}"
-            for p in sorted_players
-        ) or "—"
+        if len(matches) > 1:
+            names = "\n".join(f"- {player_str(m)}" for m in matches[:6])
+            await ctx.send(f"Multiple matches:\n{names}\nBe more specific.")
+            return
 
-        embed.add_field(name=field_name, value=field_value, inline=True)
+        current_cap_dict = draft["captains"][draft["turn"]]
+        current_cap = current_cap_dict["name"]
 
-    # ── Tanks and Healers (inline) ─────────────────────────────────────────────
-    by_role = {}
-    for p in draft["pool"]:
-        role = p.get("role", "Unknown")
-        if role in ["Tanks", "Healers"]:
-            by_role.setdefault(role, []).append(p)
+        picked = matches[0]
+        draft["pool"].remove(picked)
+        draft["teams"][current_cap].append(picked)
 
-    for role, players in sorted(by_role.items()):
-        field_name = f"**{role} ({len(players)})**"
+        await ctx.send(f"**Admin override** — **{current_cap}** picked **{player_str(picked)}**!")
 
-        sorted_players = sorted(players, key=lambda x: x["name"])
-        field_value = "\n".join(
-            f"{p.get('specEmoji','')} {p['name']}"
-            for p in sorted_players
-        ) or "—"
+        if not draft["pool"]:
+            embed = discord.Embed(title="Draft Complete!", color=0xff8800)
+            for cap_dict, team in draft["teams"].items():
+                cap = cap_dict["name"]
+                team_str = "\n".join(player_str(p) for p in team)
+                embed.add_field(name=cap, value=team_str or "—", inline=False)
+            await ctx.send(embed=embed)
+            del bot.drafts[event_id]
+            save_drafts(bot.drafts)
+            return
 
-        embed.add_field(name=field_name, value=field_value, inline=True)
+        draft["turn"] += draft["direction"]
+        if draft["turn"] >= len(draft["captains"]) or draft["turn"] < 0:
+            draft["direction"] *= -1
+            draft["turn"] += draft["direction"]
 
-    embed.set_footer(text=f"Total unique players: {len(draft['pool'])} • Pick with !pick <name>")
-    await ctx.send(embed=embed)
+        save_drafts(bot.drafts)
 
+        await notify_turn(ctx, draft, draft["turn"])
 
-@commands.command(name="teams")
-async def teams(ctx):
-    draft = get_draft_by_channel(ctx.channel.id)
-    if not draft:
-        await ctx.send("No active draft here.")
-        return
+    @bot.command(name="remaining")
+    async def remaining(ctx):
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft here.")
+            return
 
-    embed = discord.Embed(title="Current Teams")
-    for cap, team in draft["teams"].items():
-        embed.add_field(name=cap, value="\n".join(player_str(p) for p in team), inline=False)
-    await ctx.send(embed=embed)
+        draft = bot.drafts[event_id]
+        if not draft["pool"]:
+            await ctx.send("Pool is empty!")
+            return
 
+        class_dots = {
+            "Priest": "⬜",
+            "Shaman": "🟦",
+            "Warrior": "🟫",
+            "Druid": "🟧",
+            "Mage": "🟦",
+            "Paladin": "🩷",
+            "Warlock": "🟪",
+            "Hunter": "🟩",
+            "Rogue": "🟨",
+            "Unknown": "⬛"
+        }
 
-@commands.command(name="status")
-async def status(ctx):
-    draft = get_draft_by_channel(ctx.channel.id)
-    if not draft:
-        await ctx.send("No active draft here.")
-        return
+        embed = discord.Embed(
+            title="Remaining Players",
+            color=0x2f3136
+        )
 
-    current = draft["captains"][draft["turn"]]
-    embed = discord.Embed(title="Draft Status")
-    embed.add_field(name="Current Turn", value=current, inline=False)
-    embed.add_field(name="Remaining", value=len(draft["pool"]), inline=True)
-    embed.add_field(name="Teams", value=len(draft["teams"]), inline=True)
-    await ctx.send(embed=embed)
+        by_class = {}
+        for p in draft["pool"]:
+            cls = p.get("class", "Unknown")
+            if cls in class_dots:
+                by_class.setdefault(cls, []).append(p)
 
+        for cls, players in sorted(by_class.items()):
+            dot = class_dots[cls]
+            field_name = f"{dot} **{cls} ({len(players)})**"
 
-def setup(bot):
-    """Register commands on the bot instance."""
-    bot.add_command(hello)
-    bot.add_command(startdraft)
-    bot.add_command(pick)
-    bot.add_command(remaining)
-    bot.add_command(cleardrafts)
-    bot.add_command(teams)
-    bot.add_command(status)
+            sorted_players = sorted(players, key=lambda x: x["name"])
+            field_value = "\n".join(
+                f"{p['name']} ({p['spec'].rstrip('0123456789')})"  # strip trailing digits from spec
+                for p in sorted_players
+            ) or "—"
+
+            embed.add_field(name=field_name, value=field_value, inline=True)
+
+        by_role = {}
+        for p in draft["pool"]:
+            role = p.get("role", "Unknown")
+            if role in ["Tanks", "Healers"]:
+                by_role.setdefault(role, []).append(p)
+
+        for role, players in sorted(by_role.items()):
+            field_name = f"**{role} ({len(players)})**"
+
+            sorted_players = sorted(players, key=lambda x: x["name"])
+            field_value = "\n".join(
+                f"{p['name']} ({p['spec'].rstrip('0123456789')})"  # strip trailing digits from spec
+                for p in sorted_players
+            ) or "—"
+
+            embed.add_field(name=field_name, value=field_value, inline=True)
+
+        embed.set_footer(text=f"Total unique players: {len(draft['pool'])} • Pick with !pick <name>")
+        await ctx.send(embed=embed)
+
+    @bot.command(name="teams")
+    async def teams(ctx):
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft here.")
+            return
+
+        draft = bot.drafts[event_id]
+
+        embed = discord.Embed(
+            title="Current Teams",
+            color=0x2f3136
+        )
+
+        # Build global pick order (non-captains in the order they were picked)
+        global_pick_order = []
+        for team in draft["teams"].values():
+            global_pick_order.extend(team[1:])
+
+        pick_number_map = {}
+        for i, p in enumerate(global_pick_order, 1):
+            pick_number_map[p["name"]] = i
+
+        for cap_name, team in draft["teams"].items():
+            team_lines = []
+
+            # Captain first - same format as others
+            cap_class = team[0].get("class", "Captain")
+            cap_spec = team[0].get("spec", "Leader").rstrip('0123456789')  # strip trailing digits
+            team_lines.append(f"**{cap_name}** ({cap_class} - {cap_spec})")
+
+            # Picked players with global draft order number
+            for p in team[1:]:
+                pick_num = pick_number_map.get(p["name"], "?")
+                spec_clean = p['spec'].rstrip('0123456789')  # strip trailing digits
+                line = f"{pick_num}: {p['name']} ({p['class']} - {spec_clean})"
+                team_lines.append(line)
+
+            embed.add_field(
+                name=f"Team {cap_name}",
+                value="\n".join(team_lines) or "— (empty)",
+                inline=True
+            )
+
+        embed.set_footer(text=f"Total players assigned: {sum(len(t) for t in draft['teams'].values())} • Pick with !pick <name>")
+        await ctx.send(embed=embed)
+
+    @bot.command(name="status")
+    async def status(ctx):
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft here.")
+            return
+
+        draft = bot.drafts[event_id]
+        current = draft["captains"][draft["turn"]]["name"]
+        embed = discord.Embed(title="Draft Status")
+        embed.add_field(name="Current Turn", value=current, inline=False)
+        embed.add_field(name="Remaining", value=len(draft["pool"]), inline=True)
+        embed.add_field(name="Teams", value=len(draft["teams"]), inline=True)
+        await ctx.send(embed=embed)
+
+    @bot.command(name="cleardrafts")
+    @commands.has_permissions(administrator=True)
+    async def cleardrafts(ctx):
+        if not bot.drafts:
+            await ctx.send("No active drafts to clear.")
+            return
+
+        old_count = len(bot.drafts)
+        bot.drafts = {}
+        save_drafts(bot.drafts)
+        await ctx.send(f"Cleared **{old_count}** active draft(s). Ready for a new one!")
+
+    @bot.command(name="enddraft")
+    @commands.has_permissions(administrator=True)
+    async def enddraft(ctx):
+        event_id = next((eid for eid, d in bot.drafts.items() if d["channel_id"] == ctx.channel.id), None)
+        if not event_id:
+            await ctx.send("No active draft in this channel.")
+            return
+
+        del bot.drafts[event_id]
+        save_drafts(bot.drafts)
+        await ctx.send(f"Draft for event {event_id} has been ended/cancelled.")
