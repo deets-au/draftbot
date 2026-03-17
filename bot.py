@@ -13,9 +13,18 @@ TOKEN = os.getenv("TOKEN")
 
 
 def make_discord_emoji(name: str, emote_id: str) -> str:
-    """Build a Discord custom emoji string from name + emote ID."""
+    """Build a Discord custom emoji string from name + emote ID.
+
+    Some specs use the wrong/old emoji name (e.g. Beastmastery).
+    We override it to use a specific consistent ID.
+    """
     if not name or not emote_id:
         return ""
+
+    # Ensure Beastmastery always uses the same known emoji ID.
+    if name.strip().lower() == "beastmastery":
+        emote_id = "579532029880827924"
+
     safe = re.sub(r"[^0-9A-Za-z_]", "_", name)
     return f"<:{safe}:{emote_id}>"
 
