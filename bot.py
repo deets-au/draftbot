@@ -282,7 +282,7 @@ async def remaining(ctx):
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{p['name']} {p.get('specEmoji','')} ({p['spec']})"
+            f"{dot} {p['name']}"
             for p in sorted_players
         ) or "—"
 
@@ -300,7 +300,7 @@ async def remaining(ctx):
 
         sorted_players = sorted(players, key=lambda x: x["name"])
         field_value = "\n".join(
-            f"{p['name']} {p.get('specEmoji','')} ({p['spec']})"
+            f"{class_dots.get(p.get('class','Unknown'),'⬛')} {p['name']}"
             for p in sorted_players
         ) or "—"
 
