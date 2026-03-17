@@ -1,3 +1,4 @@
+import atexit
 import discord
 from discord.ext import commands
 import aiohttp
@@ -8,6 +9,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
+
+
+def _save_drafts_on_exit() -> None:
+    """Persist drafts to disk when the process exits."""
+    print("[INFO] Saving drafts to disk...")
+    save_drafts(drafts)
+
+atexit.register(_save_drafts_on_exit)
 
 if not TOKEN:
     print("ERROR: No TOKEN found in .env file!")
